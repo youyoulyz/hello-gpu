@@ -1,6 +1,6 @@
 ---
 title: "第12章 从 Vector Add 理解 GPU 并行"
-description: "Hello GPU 第12章 · CPU baseline、Naive HIP、线程映射、访存合并、benchmark"
+description: "Hello GPU 第12章 · CPU baseline、Naive HIP、线程映射、访存合并、block size 对性能的影响、benchmark"
 ---
 
 # 第12章 从 Vector Add 理解 GPU 并行

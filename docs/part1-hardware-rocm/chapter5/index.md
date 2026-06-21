@@ -1,6 +1,6 @@
 ---
 title: "第5章 ROCm 软件栈与工具链"
-description: "Hello GPU 第5章 · 驱动、HSA、HIP runtime、算子库、上层框架的分层关系，以及如何用命令检查每一层"
+description: "Hello GPU 第5章 · 驱动、HSA、HIP runtime、KFD、算子库、上层框架的分层关系，以及如何用命令检查每一层"
 ---
 
 # 第5章 ROCm 软件栈与工具链

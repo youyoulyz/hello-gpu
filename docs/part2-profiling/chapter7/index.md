@@ -1,6 +1,6 @@
 ---
 title: "第7章 性能优化的基本方法论"
-description: "Hello GPU 第7章 · Latency、Throughput、Bandwidth、FLOPS、Roofline、可信 benchmark"
+description: "Hello GPU 第7章 · Latency、Throughput、Bandwidth、FLOPS、Roofline、Arithmetic Intensity、可信 benchmark"
 ---
 
 # 第7章 性能优化的基本方法论

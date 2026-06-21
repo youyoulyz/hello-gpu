@@ -1,6 +1,6 @@
 ---
 title: "第11章 HIP 编程基础"
-description: "Hello GPU 第11章 · Kernel、Thread、Block、Grid、Host / Device、内存管理"
+description: "Hello GPU 第11章 · Kernel、Thread、Block、Grid、Host / Device、内存管理、指令调度对性能的影响"
 ---
 
 # 第11章 HIP 编程基础

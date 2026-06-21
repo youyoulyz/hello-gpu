@@ -1,6 +1,6 @@
 ---
 title: "第22章 单卡推理性能全景"
-description: "Hello GPU 第22章 · 延迟、吞吐、精度、batch、单卡端到端 pipeline；明确单卡能解 vs 不能解的问题"
+description: "Hello GPU 第22章 · 延迟、吞吐、精度、batch、低精度格式、单卡端到端 pipeline"
 ---
 
 # 第22章 单卡推理性能全景

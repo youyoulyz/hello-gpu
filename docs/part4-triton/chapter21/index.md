@@ -1,6 +1,6 @@
 ---
 title: "第21章 Triton 自动调参"
-description: "Hello GPU 第21章 · 搜索空间、autotune、自动 benchmark、选择最优 kernel config"
+description: "Hello GPU 第21章 · 搜索空间、autotune 机制、工程挑战、解析模型、Micro-to-E2E Gap、选择策略"
 ---
 
 # 第21章 Triton 自动调参

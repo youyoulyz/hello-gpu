@@ -1,6 +1,6 @@
 ---
 title: "第27章 AI 编译器到底在优化什么"
-description: "Hello GPU 第27章 · 模型图、计算图、算子、kernel、ISA、手写优化关系"
+description: "Hello GPU 第27章 · 模型图、计算图、算子、kernel、ISA、手写优化关系，编译管线各层的优化机会"
 ---
 
 # 第27章 AI 编译器到底在优化什么

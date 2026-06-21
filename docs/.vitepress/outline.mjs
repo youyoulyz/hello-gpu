@@ -87,17 +87,17 @@ export const parts = [
           ['LDS 详解与 bank 冲突', '解释 LDS 的 bank 结构、为什么 stride 选错会让性能腰斩。'],
           ['全局内存合并访存（Coalescing）', '观察连续线程访问连续地址为什么是带宽利用率的关键。'],
           ['原子操作与内存一致性', '解释 atomics、fence、memory order 在 reduction、histogram 等算子里的代价。'],
-          ['用 micro-benchmark 测量带宽与延迟', '给出一组可复现的小程序，验证 HBM、L2、LDS 的实测带宽与延迟。']
+          ['用 micro-benchmark 测量带宽与延迟', '用 hipcc 编译的 benchmark kernel 测量 HBM triad 带宽、L2 stride 带宽、LDS bank conflict 带宽，并在 Roofline 图上标注实测点。']
         ]
       },
       {
         title: 'ROCm 软件栈与工具链',
-        summary: '驱动、HSA、HIP runtime、算子库、上层框架的分层关系，以及如何用命令检查每一层',
+        summary: '驱动、HSA、HIP runtime、KFD、算子库、上层框架的分层关系，以及如何用命令检查每一层',
         status: '🚧',
         lead: '本章用一张分层图把 ROCm 拆开，让你知道 PyTorch、Triton、MIGraphX 这些上层工具最终怎么走到硬件。读完后，你应该能看懂 rocminfo / rocm-smi / hipcc 的输出在描述哪一层，并能在出问题时迅速定位是哪一层失联。',
         sections: [
           ['ROCm 是什么', '用分层图理解驱动、运行时、编译器、库和工具链之间的关系。'],
-          ['AMDGPU Driver、HSA Runtime、HIP Runtime', '厘清三层 runtime 的职责和接口边界。'],
+          ['AMDGPU Driver、KFD、HSA Runtime、HIP Runtime', '厘清从内核驱动到用户态 runtime 的四层职责和接口边界，说明 KFD (/dev/kfd) 是 HIP 的真正底层。'],
           ['算子库：rocBLAS / MIOpen / Composable Kernel', '介绍核心库的定位，方便后续 kernel 章节做对比。'],
           ['编译器侧：HIPCC / LLVM-AMDGPU', '理解 HIP 代码到 ISA 的编译路径。'],
           ['上层框架与 ROCm 的关系', '说明 PyTorch / Triton / MIGraphX / vLLM 各自依赖哪些 ROCm 能力。'],
@@ -127,15 +127,15 @@ export const parts = [
     chapters: [
       {
         title: '性能优化的基本方法论',
-        summary: 'Latency、Throughput、Bandwidth、FLOPS、Roofline、可信 benchmark',
+        summary: 'Latency、Throughput、Bandwidth、FLOPS、Roofline、Arithmetic Intensity、可信 benchmark',
         status: '🚧',
         lead: '本章先不急着打开 profiling 工具，而是建立判断性能问题的基本语言。读完后，你应该能区分延迟、吞吐、带宽、FLOPS，以及为什么不能凭感觉优化。',
         sections: [
           ['为什么不能凭感觉优化', '用常见误区说明没有数据的优化为什么容易走偏。'],
           ['Latency、Throughput、Bandwidth、FLOPS', '定义最常用的性能指标，并说明它们分别回答什么问题。'],
-          ['Memory-bound 与 Compute-bound', '理解访存瓶颈和计算瓶颈的差异。'],
+          ['Memory-bound 与 Compute-bound', '理解访存瓶颈和计算瓶颈的差异，用 Arithmetic Intensity 公式 I = 2MNK / (MK + NK + MN) 量化判断。'],
           ['Roofline 思想入门', '用简单图示理解理论上限、实际性能和优化方向之间的关系。'],
-          ['如何设计一个可信的 benchmark', '说明热身、重复次数、同步、输入规模和日志记录的基本要求。'],
+          ['如何设计一个可信的 benchmark', '说明热身、重复次数、同步、输入规模和日志记录的基本要求。包括 L2 cache flushing（每次计时前清零 256MB buffer 防止缓存命中扭曲结果）、分位数报告（median/20th/80th 暴露尾部延迟）等实操细节。'],
           ['如何避免伪优化', '识别缓存偶然命中、测量范围错误、数据拷贝遗漏等伪提升。']
         ]
       },
@@ -143,7 +143,7 @@ export const parts = [
         title: '用一个慢算子跑通 Profiling 闭环',
         summary: '同一案例贯穿 benchmark、rocprof、PyTorch Profiler、瓶颈判断',
         status: '🚧',
-        lead: '本章用一个固定的慢算子做主线，不把 profiling 工具当清单介绍，而是让每个工具服务同一个问题：它到底慢在哪里。读完后，你应该能完成一次从 benchmark 到优化假设的最小闭环。',
+        lead: '本章用一个固定的慢算子做主线，不把 profiling 工具当清单介绍，而是让每个工具服务同一个问题：它到底慢在哪里。读完后，你应该能完成一次从 benchmark 到优化假设的最小闭环。注：本章使用的慢算子示例包含 HIP kernel 代码，如果读者尚未完成第 11 章（HIP 编程基础），建议先阅读第 11 章前四节后再回到本章。',
         sections: [
           ['选择一个可控的慢算子', '确定输入规模、baseline 实现和预期瓶颈，避免一开始就分析复杂模型。'],
           ['运行 baseline benchmark', '用统一脚本记录延迟、吞吐和硬件上下文。'],
@@ -169,7 +169,7 @@ export const parts = [
       },
       {
         title: 'Omniperf 与硬件计数器进阶',
-        summary: '用进阶计数器解释访存、Occupancy、波前行为和 Roofline 证据',
+        summary: '用进阶计数器解释访存、Occupancy、波前行为和 Roofline 证据，ISA 级对比分析',
         status: '🚧',
         lead: '本章是 profiling 的进阶篇，目标不是堆更多工具名，而是在已经有慢算子案例的基础上，用硬件计数器解释为什么它慢。读完后，你应该知道什么时候需要 Omniperf，以及哪些计数器能支撑优化判断。',
         sections: [
@@ -178,7 +178,8 @@ export const parts = [
           ['访存相关指标怎么看', '观察带宽、缓存、访存合并和内存等待相关信号。'],
           ['Occupancy 与 Wavefront 行为', '理解占用率、寄存器压力和 wavefront 调度对性能的影响。'],
           ['把计数器放回 Roofline', '用硬件指标解释当前点为什么离理论上限有差距。'],
-          ['进阶报告模板', '扩展上一章报告结构，加入计数器证据和风险说明。']
+          ['ISA 级对比分析', '用 llvm-objdump 反汇编两个不同配置的 kernel，对比 VGPR/SGPR 数、LDS 大小、WMMA 指令前后的重排操作数、scratch spill 和 stall 计数。'],
+          ['进阶报告模板', '扩展上一章报告结构，加入计数器证据、ISA 对比和风险说明。']
         ]
       }
     ]
@@ -191,22 +192,23 @@ export const parts = [
     chapters: [
       {
         title: 'HIP 编程基础',
-        summary: 'Kernel、Thread、Block、Grid、Host / Device、内存管理',
+        summary: 'Kernel、Thread、Block、Grid、Host / Device、内存管理、指令调度对性能的影响',
         status: '🚧',
-        lead: '本章建立 HIP 编程的最小语法和执行模型，为后续手写算子做准备。读完后，你应该能看懂一个 HIP kernel 如何从 Host 端启动并在 Device 上执行。',
+        lead: '本章建立 HIP 编程的最小语法和执行模型，为后续手写算子做准备。读完后，你应该能看懂一个 HIP kernel 如何从 Host 端启动并在 Device 上执行，并理解指令顺序为什么影响性能。',
         sections: [
           ['HIP 和 CUDA 的关系', '用迁移视角理解 HIP 的定位，但不把本教程写成 CUDA API 对照表。'],
           ['Kernel、Thread、Block、Grid', '理解 GPU 并行程序的基本层级。'],
           ['Host 与 Device', '区分 CPU 侧控制逻辑和 GPU 侧执行逻辑。'],
           ['Device Memory 管理', '介绍分配、拷贝和释放 device memory 的基本流程。'],
           ['Kernel Launch', '理解启动参数如何影响并行度和数据映射。'],
-          ['错误检查与调试', '建立最小错误检查习惯，避免失败时只看到空输出。'],
+          ['错误检查与调试', '建立最小错误检查习惯，避免失败时只看到空输出。介绍常见 GPU hang 模式：VCC 残留、EXEC 掩码不平衡、缺少 waitcnt 导致的数据冒险。'],
+          ['为什么指令顺序 matters', '一条 LDG 延迟 ~300 cycles；把不依赖加载结果的指令插在 LDG 和使用者之间可以隐藏延迟。这是后续 profiling 和优化的底层基础。'],
           ['思考题', '通过小问题确认你是否理解基本执行模型。']
         ]
       },
       {
         title: '从 Vector Add 理解 GPU 并行',
-        summary: 'CPU baseline、Naive HIP、线程映射、访存合并、benchmark',
+        summary: 'CPU baseline、Naive HIP、线程映射、访存合并、block size 对性能的影响、benchmark',
         status: '🚧',
         lead: '本章用最简单的 Vector Add 连接 CPU 思维和 GPU 并行思维。读完后，你应该能解释线程如何映射到数据，以及为什么看似简单的向量加法也需要严谨 benchmark。',
         sections: [
@@ -214,6 +216,7 @@ export const parts = [
           ['Naive HIP 版本', '写出第一个一线程处理一个元素的 HIP kernel。'],
           ['线程映射', '理解 blockIdx、threadIdx 和全局元素下标的关系。'],
           ['访存合并', '观察连续线程访问连续地址为什么重要。'],
+          ['Block Size 对性能的影响', '用 64/128/256/512 不同 block size 做 benchmark，观察 wave 利用率和 occupancy 的关系。'],
           ['Benchmark 与 profiling', '对比 CPU、GPU 和不同输入规模下的表现。'],
           ['优化报告', '把实验结果整理成一份最小优化报告。'],
           ['思考题', '通过修改输入规模和 block size 理解并行度变化。']
@@ -238,7 +241,7 @@ export const parts = [
         title: 'Softmax 优化',
         summary: '数值稳定性、访存优化、Block 级并行、PyTorch 对齐',
         status: '🚧',
-        lead: '本章用 Softmax 把 reduction、数值稳定性和访存优化串起来。读完后，你应该能写出一个结果正确、能被 benchmark 和 profiling 验证的教学版 Softmax。',
+        lead: '本章用 Softmax 把 reduction、数值稳定性和访存优化串起来。重点练习手写线程级 kernel 的 reduction 模式和数值稳定性处理——这些是后续 Triton 版 Softmax（第 19 章）的底层基础。读完后，你应该能写出一个结果正确、能被 benchmark 和 profiling 验证的教学版 Softmax。',
         sections: [
           ['Softmax 在 Transformer 中的位置', '说明为什么 Softmax 是理解注意力性能的重要入口。'],
           ['Naive Softmax', '从直接实现开始，观察重复访存和数值问题。'],
@@ -265,17 +268,20 @@ export const parts = [
       },
       {
         title: 'Matmul 入门优化',
-        summary: 'Naive GEMM、Tiling、LDS 缓存、Register Blocking、rocBLAS 差距观察',
+        summary: 'Naive GEMM、Tiling、LDS 缓存、Register Blocking、tile 选择、WMMA、调度策略、rocBLAS 差距观察',
         status: '🚧',
-        lead: '本章用教学版 GEMM 理解矩阵乘为什么是 AI 计算的核心。目标不是追平 rocBLAS，而是通过 tiling、LDS 和寄存器复用看懂高性能 GEMM 的基本方向。',
+        lead: '本章用教学版 GEMM 理解矩阵乘为什么是 AI 计算的核心。目标不是追平 rocBLAS，而是通过 tiling、LDS 和寄存器复用看懂高性能 GEMM 的基本方向，并理解 tile 大小怎么选、tensor core 怎么用、调度策略怎么影响性能。',
         sections: [
           ['GEMM 为什么是核心算子', '说明矩阵乘在神经网络和注意力计算中的地位。'],
           ['Naive Matmul', '写出最直接的一线程计算一个输出元素的实现。'],
           ['Tiling', '把矩阵拆块，理解数据复用的第一步。'],
-          ['LDS 缓存', '用 LDS 缓存 tile，减少全局内存重复读取。'],
+          ['LDS 缓存', '用 LDS 缓存 tile，减少全局内存重复读取。给出 Triton AMD 后端 LDS 用量精确公式：ns==1 时 max(A_bytes, B_bytes)，ns>=2 时 (ns-1)*(A_bytes+B_bytes)。'],
           ['Register Blocking', '观察每个线程计算多个输出时的寄存器复用。'],
+          ['Tile 大小怎么选', '给出 6 条硬件约束规则：BLOCK_M ≤ M×2、BLOCK_K 是 WMMA_K 倍数、LDS < 32KB（双缓冲预算）、wave 利用率 ≥ 4、寄存器 < 256 VGPRs、BLOCK_N×dtype_bytes % 16 == 0（bank 友好）。配一个决策流程图。'],
+          ['使用 WMMA Tensor 单元', '介绍 v_wmma_f32_16x16x16_f16_w32 intrinsic 的基本用法：8-VGPR 对齐要求、lane 布局、累加器交错（ILP）隐藏延迟。展示教学版 GEMM 从纯 ALU 切换到 WMMA 后的性能变化。'],
+          ['调度策略进阶概览', 'Persistent GEMM（workgroup 存活处理多 tile）、Stream-K（K 维度细粒度划分，tile 数 < CU 数时的协作）、Work-Stealing（原子计数器动态负载均衡）。每种策略用一句话说明解决什么问题。'],
           ['简化版高性能 GEMM', '组合前面的优化，形成一个教学版优化实现。'],
-          ['与 rocBLAS 对比', '只观察差距和方向，不承诺达到库级性能。'],
+          ['与 rocBLAS 对比', '观察差距和方向，用一张表列出教学版 vs 库级 GEMM 的具体差距点：WMMA fragment 布局、LDS 双缓冲、累加器交错、Split-K、WGP 模式。'],
           ['思考题', '分析 tile size、数据类型和矩阵形状对性能的影响。']
         ]
       }
@@ -289,14 +295,16 @@ export const parts = [
     chapters: [
       {
         title: 'Triton 编程模型',
-        summary: 'Triton vs HIP、program model、block 级张量、AMD 环境验证',
+        summary: 'Triton vs HIP、program model、block 级张量、内存访问模式、编译流程、AMD 环境验证',
         status: '🚧',
-        lead: '本章从 HIP 切换到 Triton，重点理解 Triton 为什么让算子开发更接近张量块级编程。读完后，你应该能解释 program、block 和 mask 如何对应到数据。',
+        lead: '本章从 HIP 切换到 Triton，重点理解 Triton 为什么让算子开发更接近张量块级编程。读完后，你应该能解释 program、block 和 mask 如何对应到数据，以及 Triton 代码从 Python 到 GPU ISA 经过了哪些编译步骤。',
         sections: [
           ['为什么需要 Triton', '说明在手写 HIP 和调用库之间，Triton 提供了什么折中。'],
-          ['Triton 和 HIP 的区别', '对比线程级编程和 block 级张量编程的思维差异。'],
+          ['Triton 和 HIP 的区别', '对比线程级编程和 block 级张量编程的思维差异。提及 tilelang 作为第三条路——block 级 + 显式内存控制，介于 Triton 和 HIP 之间，本教程不展开。'],
           ['Triton on AMD 环境配置', '验证当前 AMD ROCm 环境下 Triton 是否可用。'],
           ['第一个 Triton kernel', '用最小示例理解 program id、block 指针和 mask。'],
+          ['Triton 的内存访问模式', 'block pointer（tl.make_block_ptr + tl.advance）vs 原始指针算术，mask 的作用，边界处理。'],
+          ['Triton 的编译流程', 'Python → Triton IR → MLIR → AMDGPU ISA 的完整路径，说明每一步做了什么优化。'],
           ['Triton 的 block / program model', '把 Triton 抽象映射回 GPU 执行模型。']
         ]
       },
@@ -304,7 +312,7 @@ export const parts = [
         title: 'Triton Matmul 优化',
         summary: 'Triton GEMM、tile 设计、数据复用、benchmark、HIP / rocBLAS 对比',
         status: '🚧',
-        lead: '本章用 Matmul 作为第一个 Triton 主案例，理解 block 级矩阵乘如何表达 tiling 和数据复用。读完后，你应该能写出一个教学版 Triton GEMM，并用 benchmark 观察它和 HIP / rocBLAS 的差距。',
+        lead: '本章用 Matmul 作为第一个 Triton 主案例，理解 block 级矩阵乘如何表达 tiling 和数据复用。重点练习 Triton 的隐式内存管理和编译器自动优化——与 HIP 版 Matmul（第 16 章）的显式控制形成对比。读完后，你应该能写出一个教学版 Triton GEMM，并用 benchmark 观察它和 HIP / rocBLAS 的差距。',
         sections: [
           ['Matmul 的计算形状', '明确 M、N、K 维度、输入布局和输出 tile 的关系。'],
           ['PyTorch 与 rocBLAS baseline', '建立可对比的库函数基线。'],
@@ -319,7 +327,7 @@ export const parts = [
         title: 'Triton Softmax 优化',
         summary: '行级 Softmax、数值稳定、block reduction、访存优化、PyTorch 对齐',
         status: '🚧',
-        lead: '本章用 Softmax 作为第二个 Triton 主案例，重点练习 block 内 reduction、数值稳定性和访存控制。读完后，你应该能把 HIP Softmax 的思路迁移到 Triton 表达。',
+        lead: '本章用 Softmax 作为第二个 Triton 主案例，重点练习 block 内 reduction、数值稳定性和访存控制。重点理解 Triton 编译器如何自动管理 LDS 和寄存器——与 HIP 版 Softmax（第 14 章）的手动管理形成对比。读完后，你应该能把 HIP Softmax 的思路迁移到 Triton 表达。',
         sections: [
           ['Softmax 的输入形状与 baseline', '确定按行计算的输入规模、输出校验和 PyTorch baseline。'],
           ['Naive Triton Softmax', '写出一行对应一个 program 的基础实现。'],
@@ -327,7 +335,7 @@ export const parts = [
           ['Block reduction 怎么表达', '理解 Triton 张量操作如何表达一行内归约。'],
           ['访存与中间结果优化', '减少重复加载和多余写回。'],
           ['Benchmark 与 profiling', '比较不同 block size 和输入形状。'],
-          ['与 HIP Softmax 对比', '从实现复杂度和性能瓶颈角度复盘差异。']
+          ['与 HIP Softmax 对比', '从实现复杂度和性能瓶颈角度复盘差异：HIP 显式管理 LDS 和同步 vs Triton 编译器自动处理。']
         ]
       },
       {
@@ -347,16 +355,20 @@ export const parts = [
       },
       {
         title: 'Triton 自动调参',
-        summary: '搜索空间、autotune、自动 benchmark、选择最优 kernel config',
+        summary: '搜索空间、autotune 机制、工程挑战、解析模型、Micro-to-E2E Gap、选择策略',
         status: '🚧',
-        lead: '本章把前面 Matmul、Softmax 和 Attention 中反复出现的 config 选择系统化。读完后，你应该知道如何定义搜索空间、运行自动 benchmark，并用证据选择当前硬件上的最优配置。',
+        lead: '本章把前面 Matmul、Softmax 和 Attention 中反复出现的 config 选择系统化，同时覆盖 autotune 的工程开销、缓存策略和替代方案。读完后，你应该知道如何定义搜索空间、运行自动 benchmark、用证据选择最优配置，并理解 autotune 的边界和替代方案。',
         sections: [
           ['BLOCK_SIZE 怎么影响性能', '从前面算子的实验结果回顾 block 参数为什么重要。'],
           ['num_warps / num_stages 的意义', '理解并行度、流水和资源占用之间的权衡。'],
-          ['搜索空间设计', '避免盲目枚举过大的配置集合。'],
-          ['Triton autotune', '使用 Triton 的 autotune 机制管理候选配置。'],
+          ['搜索空间设计', '避免盲目枚举过大的配置集合，用硬件约束裁剪候选。'],
+          ['Triton autotune 机制', '使用 @triton.autotune 管理候选配置，理解 key 参数、config 参数和 pruning 的关系。'],
           ['自动 benchmark', '记录每个候选的命令、输入、硬件和结果。'],
-          ['自动选择最优 kernel config', '把性能结果转成可复用的配置选择。']
+          ['自动选择最优 kernel config', '把性能结果转成可复用的配置选择。'],
+          ['autotune 的工程开销', '首次 benchmark 数秒到数分钟；Triton JIT dispatch 每次数百微秒。缓存持久化（按 GPU 型号 + Triton 版本 + kernel 哈希索引到磁盘 JSON）和 JIT 启动优化（缓存编译后 kernel handle，launch 降到 20-50μs）。'],
+          ['解析模型 vs 暴力搜索', '两种「免 autotune」路线：tritonBLAS Origami 用解析公式直接计算最优配置（微秒级，白盒），tilelang 用显式 schedule 控制绕过搜索（开发者手动指定）。对比表：搜索方式、首次开销、可解释性、泛化能力。'],
+          ['Micro-to-E2E Gap', '微基准 tile 优化不一定传导到端到端。三个传导条件：后端 tile 可控、优化的 kernel 在热路径、实际 shape 分布与测试匹配。反面案例：Marlin bsm 微基准 2.1× 加速但端到端慢 4.3%。'],
+          ['什么时候用什么策略', 'autotune（探索期，需要实测数据）、手动调参（已知最优，追求确定性）、解析模型（大规模部署，需要零开销选择）。给出决策流程图。']
         ]
       }
     ]
@@ -369,14 +381,14 @@ export const parts = [
     chapters: [
       {
         title: '单卡推理性能全景',
-        summary: '延迟、吞吐、精度、batch、单卡端到端 pipeline；明确单卡能解 vs 不能解的问题',
+        summary: '延迟、吞吐、精度、batch、低精度格式、单卡端到端 pipeline',
         status: '🚧',
         lead: '本章从单卡端到端视角理解推理性能，不只盯着单个 kernel。读完后，你应该能区分模型计算、预处理、后处理、数据传输各自的开销，并知道哪些问题在单卡上可解、哪些必须等 hello-mlsys（多副本/动态 batching/多卡通信）和 hello-ai-infra（服务化/集群部署）。',
         sections: [
           ['训练和推理的差异', '说明推理为什么更关注延迟、吞吐、稳定性和资源利用率。'],
           ['Latency 与 Throughput', '定义端到端延迟、单请求延迟和单卡吞吐。'],
           ['Batch 与吞吐（单卡视角）', '理解 batch size 对单卡性能的影响（不展开多请求调度）。'],
-          ['FP32 / FP16 / BF16 / INT8', '介绍精度选择和量化对推理性能的影响边界。'],
+          ['低精度格式：FP16 / BF16 / FP8 / INT8 / FP4', '介绍各精度格式的区别：FP8 的 FNUZ vs standard 变体、FP4 的 MXFP4 e2m1 格式和 e8m0 block scale、INT8 的 per-channel 量化。说明精度选择对推理性能和显存的影响边界。'],
           ['模型加载、预处理、后处理开销', '把非模型计算也纳入性能分析范围。'],
           ['端到端推理 pipeline', '画出从输入到输出的完整路径。'],
           ['单卡能解 vs 不能解的问题', '明确多副本、动态 batching、多卡通信交给后续两本书。']
@@ -449,14 +461,15 @@ export const parts = [
     chapters: [
       {
         title: 'AI 编译器到底在优化什么',
-        summary: '模型图、计算图、算子、kernel、ISA、手写优化关系',
+        summary: '模型图、计算图、算子、kernel、ISA、手写优化关系，编译管线各层的优化机会',
         status: '🚧',
-        lead: '本章把编译器放回 AI Infra 优化链路中，解释它连接模型表达和硬件执行的方式。读完后，你应该能理解编译器优化和手写 kernel 优化不是互斥关系。',
+        lead: '本章把编译器放回 AI Infra 优化链路中，解释它连接模型表达和硬件执行的方式。读完后，你应该能理解编译器优化和手写 kernel 优化不是互斥关系，并能用自己写过的 GEMM kernel 说明编译管线每一层做了什么。',
         sections: [
           ['从模型图到计算图', '理解模型结构如何被表示成可优化的计算图。'],
           ['从计算图到算子', '观察图中节点如何落到具体算子或子图。'],
           ['从算子到 kernel', '理解算子实现如何选择库函数、生成代码或调用自定义 kernel。'],
-          ['从 kernel 到 ISA', '说明最终执行仍然受硬件指令和资源约束。'],
+          ['从 kernel 到 ISA', '用读者在第 16 章写过的 GEMM kernel 为例，展示它经过 Triton 编译后变成了什么 ISA，说明最终执行受硬件指令和资源约束。'],
+          ['编译管线各层的优化机会', '用一张图展示：Triton DSL（tile 大小、循环顺序）→ MLIR/SSA（算子融合、常量折叠）→ PTX（指令选择）→ SASS（指令调度、内存指令重排）→ cubin。每一层的优化粒度和收益上限不同。'],
           ['编译器优化和手写优化的关系', '解释两者如何互补，而不是互相替代。']
         ]
       },
@@ -464,7 +477,7 @@ export const parts = [
         title: '图优化原理基础',
         summary: '算子融合、常量折叠、死代码消除、布局优化、Memory Planning 原理',
         status: '🚧',
-        lead: '本章只讲图优化背后的原理，不重复第 17 章的工具命令。读完后，你应该能解释为什么工具打开某些优化选项后，模型可能更快或更省显存。',
+        lead: '本章只讲图优化背后的原理，不重复第 23 章的工具命令。读完后，你应该能解释为什么工具打开某些优化选项后，模型可能更快或更省显存。',
         sections: [
           ['Operator Fusion', '理解算子融合如何减少中间写回、kernel launch 和内存带宽压力。'],
           ['Constant Folding', '说明常量计算为什么可以提前完成。'],
@@ -476,28 +489,30 @@ export const parts = [
       },
       {
         title: 'Kernel 生成与调度搜索',
-        summary: 'Schedule 原语、搜索空间、Cost Model、AutoScheduler、硬件反馈',
+        summary: 'Schedule 原语、搜索空间、Cost Model、解析模型、AutoScheduler、硬件反馈',
         status: '🚧',
-        lead: '本章从图优化进入 kernel 生成和调度搜索，解释自动调优为什么需要硬件反馈。读完后，你应该能把 Triton autotune 和编译器 schedule 搜索放到同一张图里理解。',
+        lead: '本章从图优化进入 kernel 生成和调度搜索，解释自动调优为什么需要硬件反馈。读完后，你应该能把 Triton autotune、tritonBLAS Origami 解析模型和编译器 schedule 搜索放到同一张图里理解。',
         sections: [
           ['Schedule 是什么', '理解同一个计算可以有不同执行计划。'],
           ['Tile / Split / Reorder / Vectorize / Unroll', '介绍常见 schedule 原语对执行方式的影响。'],
           ['搜索空间设计', '说明为什么可选 schedule 太多，需要约束搜索范围。'],
-          ['Cost Model', '理解代价模型如何预测候选实现。'],
+          ['Cost Model', '理解代价模型如何预测候选实现。回扣到第 21 章的 tritonBLAS Origami 解析模型——它就是一种 cost model，用公式代替搜索。'],
           ['AutoScheduler / MetaSchedule 思想', '认识自动搜索 schedule 的基本流程。'],
           ['为什么自动调优需要硬件反馈', '回到 AI MAX 395 实测，说明真实硬件数据不可替代。']
         ]
       },
       {
-        title: 'TVM / Triton / MIGraphX 对比',
-        summary: '三个工具的定位、适用问题和选择指南',
+        title: 'TVM / Triton / MIGraphX / tritonBLAS / Composable Kernel 对比',
+        summary: '五个工具的定位、适用问题和选择指南',
         status: '🚧',
-        lead: '本章用前面学过的工具和原理做一次定位对比。读完后，你应该能根据问题类型判断是该写 Triton kernel、用 MIGraphX 跑推理，还是研究 TVM 类编译器。',
+        lead: '本章用前面学过的工具和原理做一次定位对比。读完后，你应该能根据问题类型判断是该写 Triton kernel、用 MIGraphX 跑推理、用 tritonBLAS 跑 GEMM，还是研究 TVM 类编译器。',
         sections: [
           ['TVM 的定位', '理解 TVM 更偏通用编译器和 schedule 搜索平台。'],
           ['Triton 的定位', '理解 Triton 更适合手写和自动调参 GPU kernel。'],
+          ['tritonBLAS 的定位', '理解 tritonBLAS 用 Origami 解析模型消除 autotune 开销，是 Triton GEMM 的「无搜索」替代方案。'],
+          ['Composable Kernel 的定位', '理解 CK 作为 AMD 官方手写 HIP kernel 库的角色，以及它和 Triton/tritonBLAS 的关系。'],
           ['MIGraphX 的定位', '理解 MIGraphX 在 AMD 推理优化链路中的角色。'],
-          ['三者适合解决的问题', '用问题类型对比各工具的使用边界。'],
+          ['五者适合解决的问题', '用问题类型对比各工具的使用边界。'],
           ['如何选择工具', '给出基于目标、成本和可复现性的选择建议。']
         ]
       }

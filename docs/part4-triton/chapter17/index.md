@@ -1,6 +1,6 @@
 ---
 title: "第17章 Triton 编程模型"
-description: "Hello GPU 第17章 · Triton vs HIP、program model、block 级张量、AMD 环境验证"
+description: "Hello GPU 第17章 · Triton vs HIP、program model、block 级张量、内存访问模式、编译流程、AMD 环境验证"
 ---
 
 # 第17章 Triton 编程模型

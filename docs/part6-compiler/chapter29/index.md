@@ -1,6 +1,6 @@
 ---
 title: "第29章 Kernel 生成与调度搜索"
-description: "Hello GPU 第29章 · Schedule 原语、搜索空间、Cost Model、AutoScheduler、硬件反馈"
+description: "Hello GPU 第29章 · Schedule 原语、搜索空间、Cost Model、解析模型、AutoScheduler、硬件反馈"
 ---
 
 # 第29章 Kernel 生成与调度搜索

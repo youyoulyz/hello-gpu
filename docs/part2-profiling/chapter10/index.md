@@ -1,6 +1,6 @@
 ---
 title: "第10章 Omniperf 与硬件计数器进阶"
-description: "Hello GPU 第10章 · 用进阶计数器解释访存、Occupancy、波前行为和 Roofline 证据"
+description: "Hello GPU 第10章 · 用进阶计数器解释访存、Occupancy、波前行为和 Roofline 证据，ISA 级对比分析"
 ---
 
 # 第10章 Omniperf 与硬件计数器进阶

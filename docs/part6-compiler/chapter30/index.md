@@ -1,9 +1,9 @@
 ---
-title: "第30章 TVM / Triton / MIGraphX 对比"
-description: "Hello GPU 第30章 · 三个工具的定位、适用问题和选择指南"
+title: "第30章 TVM / Triton / MIGraphX / tritonBLAS / Composable Kernel 对比"
+description: "Hello GPU 第30章 · 五个工具的定位、适用问题和选择指南"
 ---
 
-# 第30章 TVM / Triton / MIGraphX 对比
+# 第30章 TVM / Triton / MIGraphX / tritonBLAS / Composable Kernel 对比
 
 ## 本章导读
 

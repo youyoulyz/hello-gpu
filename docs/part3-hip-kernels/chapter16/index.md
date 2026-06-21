@@ -1,6 +1,6 @@
 ---
 title: "第16章 Matmul 入门优化"
-description: "Hello GPU 第16章 · Naive GEMM、Tiling、LDS 缓存、Register Blocking、rocBLAS 差距观察"
+description: "Hello GPU 第16章 · Naive GEMM、Tiling、LDS 缓存、Register Blocking、tile 选择、WMMA、调度策略、rocBLAS 差距观察"
 ---
 
 # 第16章 Matmul 入门优化
