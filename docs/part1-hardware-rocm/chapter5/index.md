@@ -109,15 +109,16 @@ ROCm 软件栈的分层视图（从应用一路到硬件）
 
 后面的小节会按从下往上的顺序，把这张图里的每一层依次拆开。
 
-## 5.2 AMDGPU Driver、HSA Runtime、HIP Runtime
+## 5.2 AMDGPU Driver、KFD、HSA Runtime、HIP Runtime
 
-这一节聚焦 @fig-rocm-stack-full 中间偏下的三层：内核驱动（AMDGPU + AMDKFD）、HSA Runtime（ROCr）、HIP Runtime。它们是 ROCm 的"地基三层"，再往上的算子库、编译器都建在它们之上。三个名字很容易混，先用一句话概括职责再展开。
+这一节聚焦 @fig-rocm-stack-full 中间偏下的四层：内核驱动（AMDGPU）、KFD（Kernel Fusion Driver）、HSA Runtime（ROCr）、HIP Runtime。它们是 ROCm 的"地基四层"，再往上的算子库、编译器都建在它们之上。四个名字很容易混，先用一句话概括职责再展开。
 
-- **AMDGPU Kernel Driver** 是 Linux 内核里的驱动，负责和 GPU 硬件交互（DMA、寄存器、显存映射、命令提交）。它和 **AMDKFD（Kernel Fusion Driver）** 配合，前者管图形和通用功能，后者专门管面向计算的"compute queue"和 SVM。来源：[Linux 内核 amdgpu 文档](https://docs.kernel.org/gpu/amdgpu/index.html)。
-- **HSA Runtime（ROCr）** 是用户态的薄层运行时，按 HSA（Heterogeneous System Architecture）规范实现，把内核驱动暴露的能力包装成稳定的 C API：创建 queue、分配显存、提交 AQL packet、信号同步等。来源：[ROCR-Runtime 仓库](https://github.com/ROCm/ROCR-Runtime)。
+- **AMDGPU Kernel Driver** 是 Linux 内核里的驱动，负责和 GPU 硬件交互（DMA、寄存器、显存映射、命令提交）。来源：[Linux 内核 amdgpu 文档](https://docs.kernel.org/gpu/amdgpu/index.html)。
+- **KFD（Kernel Fusion Driver）** 是 AMDGPU 驱动的计算子系统，通过 `/dev/kfd` 设备文件暴露 ioctl 接口，专门管面向计算的 queue 创建、VRAM 分配、SVM（共享虚拟内存）和事件同步。HIP Runtime 的每次 kernel launch 最终都会走到 KFD 的 `AMDKFD_IOC_CREATE_QUEUE` ioctl。KFD 是 HIP 的真正底层——绕过 HIP 和 HSA Runtime，直接用 KFD ioctl 也能驱动 GPU 执行 kernel，但代价是需要自己构造 AQL dispatch packet（64 字节的硬件命令格式）和管理 doorbell。来源：[AMD KFD ioctl 接口](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/amd/amdkfd/kfd_ioctl.h)。
+- **HSA Runtime（ROCr）** 是用户态的薄层运行时，按 HSA（Heterogeneous System Architecture）规范实现，把 KFD 和 AMDGPU 暴露的能力包装成稳定的 C API：创建 queue、分配显存、提交 AQL packet、信号同步等。来源：[ROCR-Runtime 仓库](https://github.com/ROCm/ROCR-Runtime)。
 - **HIP Runtime** 在 HSA 之上提供和 CUDA Runtime 形态接近的 API（`hipMalloc`、`hipMemcpy`、`hipLaunchKernel`），方便从 CUDA 代码迁移过来。来源：[HIP 文档](https://rocm.docs.amd.com/projects/HIP/en/latest/)。
 
-下面把"一次 `hipLaunchKernelGGL` 调用"在这三层里走的路径展开。
+下面把"一次 `hipLaunchKernelGGL` 调用"在这四层里走的路径展开。
 
 ::: figure fig-hip-launch-path
 ```mermaid
@@ -139,10 +140,10 @@ sequenceDiagram
     HIPRT-->>App: hipDeviceSynchronize 返回
 ```
 
-一次 HIP kernel launch 在三层 runtime 中的传递路径
+一次 HIP kernel launch 在四层 runtime 中的传递路径
 :::
 
-如果把同一条链路换成接力赛视角，@fig-hip-relay-race 会更容易记：应用把任务交给 HIP Runtime，HIP 再交给 HSA Runtime 和驱动，最后由 GPU 真正执行。
+如果把同一条链路换成接力赛视角，@fig-hip-relay-race 会更容易记：应用把任务交给 HIP Runtime，HIP 再交给 HSA Runtime 和 KFD 驱动，最后由 GPU 真正执行。
 
 ::: figure fig-hip-relay-race
 ![HIP runtime 接力路径](./images/hip-relay-race.png)
@@ -156,15 +157,16 @@ Host、HIP Runtime、HSA Runtime、Driver 与 GPU 之间的 kernel launch 接力
 - `rocminfo` 看不到 GPU，多数是 KFD / AMDGPU 这层出问题（驱动没装、用户没在 `render` 或 `video` 组、`/dev/kfd` 权限不对）。
 - `import torch` 成功但 `torch.cuda.is_available()` 为 False，多数是 HSA 或 HIP runtime 这层失联（`HSA_OVERRIDE_GFX_VERSION` 未设、ROCm 库找不到）。
 
-三层 runtime 的接口边界画成表更清楚：
+四层 runtime 的接口边界画成表更清楚：
 
 | 组件 | 处于何处 | 主要 API 形态 | 出问题的典型现象 |
 | ---- | ---- | ---- | ---- |
-| AMDGPU + AMDKFD | Linux 内核态 | ioctl / 设备文件 | `dmesg` 报 GPU 错、`/dev/kfd` 不存在 |
+| AMDGPU | Linux 内核态 | DRM ioctl / 设备文件 | `dmesg` 报 GPU 错、GPU 不可见 |
+| KFD | Linux 内核态 | `/dev/kfd` ioctl | `/dev/kfd` 不存在、权限不足、queue 创建失败 |
 | HSA Runtime / ROCr | 用户态 C API | `hsa_*`，AQL packet | `rocminfo` 报错、`HSA Status Error` |
 | HIP Runtime | 用户态 C / C++ API | `hip*`，类 CUDA 风格 | `hipErrorInvalidDevice`、kernel 启动失败 |
 
-写算子时你绝大多数情况只接触 HIP API；写 profiler、调度器、编译器后端时才会下沉到 HSA。AMDGPU/AMDKFD 这一层除了排错时看 `dmesg`，平时不会自己写。
+写算子时你绝大多数情况只接触 HIP API；写 profiler、调度器、编译器后端时才会下沉到 HSA。KFD 和 AMDGPU 这一层除了排错时看 `dmesg`，平时不会自己写——但知道它的存在有助于理解 dispatch 延迟的来源：HIP 的一次 async kernel launch 大约 2.6μs，其中包含了 HSA Runtime 构造 AQL packet、KFD ioctl 提交 queue、doorbell 写入等开销。直接用 KFD ioctl 可以把 async dispatch 压到 2.26μs（约 13% 的差距），但这需要自己处理 AQL packet 格式和 completion polling，通常只在对延迟极度敏感的场景（如推理 serving）才值得考虑。
 
 > 关于 gfx1151 / AI MAX 395 的一个实测注记：在 ROCm 7.12.0 上，AI MAX 395 已被官方支持识别，无需 `HSA_OVERRIDE_GFX_VERSION`。早期 ROCm 6.x 上有读者报告需要手动 override，但具体边界 🚧 待核实。
 

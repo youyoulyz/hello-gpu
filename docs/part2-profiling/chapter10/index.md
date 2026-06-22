@@ -373,7 +373,115 @@ flowchart TD
 
 > AI MAX 395 + ROCm 7.12.0 实测的硬件参数：DRAM 实测平台 ~225 GB/s，MALL 命中区 ~528 GB/s（[chapter1 §7.5 实测数字](../chapter7/index.md#实测数字-ai-max-395--rocm-7120)）；`torch.matmul` achieved P_peak fp16 ~34 TFLOPS、fp32 ~3.1 TFLOPS（[chapter1 §7.5](../chapter7/index.md#实测数字-ai-max-395--rocm-7120)）。社区估的 ~59 TFLOPS 是仅算 WMMA SIMD 单元的理论顶，本书优化决策以 achieved 数据为准。
 
-## 10.6 进阶报告模板
+## 10.6 ISA 级对比分析
+
+PMC counter 告诉你"哪个硬件单元在忙"，但它不能告诉你"是哪条指令让它忙的"。当你需要回答下面这类问题时，就要下沉到 ISA 层：
+
+- 同一个 kernel，换了 tile size 以后 VGPR 用了多少？occupancy 受到什么影响？
+- WMMA 指令前后有没有多余的 `v_perm` / `v_pack` / `v_mov`（数据重排开销）？
+- 有没有 scratch spill（寄存器溢出到显存）？
+- `s_waitcnt` 的 vmcnt / lgkmcnt 值分布是否合理？
+
+### 如何拿到 ISA dump
+
+HIP kernel 编译后会生成一个 ELF code object，里面包含 GPU 机器码。用 `llvm-objdump` 可以把它反汇编成人可读的 GCN ISA 文本：
+
+```bash
+# 编译 HIP kernel 并保留 code object
+hipcc -O2 --offload-arch=gfx1151 -save-temps vector_add.hip -o vector_add
+
+# 反汇编 code object（.hsaco 文件）
+llvm-objdump --disassemble --mcpu=gfx1151 \
+  --no-show-raw-insn \
+  vector_add-gfx1151.hsaco > vector_add_isa.txt
+```
+
+Triton kernel 的 ISA 可以通过设置环境变量获取：
+
+```bash
+# 让 Triton 保存编译后的 HSACO 和 ISA dump
+TRITON_PRINT_AUTOTUNING=1 AMDGCN_ENABLE_DUMP=1 \
+  python your_triton_script.py
+```
+
+### Kernel descriptor：VGPR / SGPR / LDS / WGP mode
+
+ISA dump 的开头通常是 kernel descriptor，包含这个 kernel 的资源占用信息。关键字段：
+
+| 字段 | 含义 | 对 occupancy 的影响 |
+| ---- | ---- | ---- |
+| `granulated_workitem_vgpr_count` | VGPR 用量（粒度化，实际值 = (N+1)×8） | VGPR 越多，单 SIMD 可驻留的 wave 越少 |
+| `granulated_wavefront_sgpr_count` | SGPR 用量 | 通常不是瓶颈，但过多会限制 wave |
+| `group_segment_fixed_size` | LDS 用量（字节） | LDS 越多，单 CU 可驻留的 wave 越少 |
+| `workgroup_processor_mode` | WGP mode（0=CPS，1=WGP） | WGP 模式下 2 个 SIMD 共享资源 |
+
+在 GFX1100 / gfx1151 上，VGPR 总池子是 256 per SIMD（1024 per CU），LDS 是 64 KB per CU。把 VGPR 用量映射到 occupancy 的速查表：
+
+| VGPR per wave | waves per SIMD | waves per CU (×4 SIMD) |
+| ---- | ---- | ---- |
+| ≤ 64 | 8 | 32 |
+| ≤ 96 | 5 | 20 |
+| ≤ 128 | 4 | 16 |
+| ≤ 170 | 3 | 12 |
+| ≤ 256 | 2 | 8 |
+
+### WMMA 指令上下文分析
+
+当 kernel 使用 WMMA / MFMA tensor 指令时，ISA 级分析的重点是指令上下文——WMMA 前后有什么指令在做数据准备和结果搬运：
+
+```text
+# 一个典型的 WMMA 指令上下文
+v_perm_b32  v20, v16, v17, v18    ← 数据重排（把 fp16 元素搬到 WMMA 需要的 lane 布局）
+v_wmma_f32_16x16x16_f16_w32 v[0:15], v[16:23], v[24:31], v[0:15]  ← WMMA 计算
+v_pack_b32_f16 v32, v0, v1        ← 结果打包回 fp16
+```
+
+要关注的信号：
+
+| 信号 | 看什么 | 优化方向 |
+| ---- | ---- | ---- |
+| WMMA 前大量 `v_perm` / `v_pack` | 数据布局和 WMMA fragment 布局不匹配 | 改 tile layout、用 LDS 做数据重排 |
+| WMMA 后大量 `v_mov` | 累加器到输出的搬运开销 | 寄存器复用、epilogue 融合 |
+| WMMA 累加器交替使用 | 不同 acc group 的 WMMA 交错执行可以隐藏延迟 | 增加 ILP（instruction-level parallelism） |
+| scratch access（`scratch_load` / `scratch_store`） | 寄存器溢出到显存——性能杀手 | 减少寄存器压力（缩小 tile、减少变量） |
+| 高频 `s_waitcnt vmcnt(0)` | 等待全局内存加载完成——wave stall | 增加计算/访存重叠、软件流水线 |
+
+### 对比两个 ISA dump
+
+最实用的分析方式不是看单个 ISA dump，而是**对比两个不同配置的 dump**。例如同一个 GEMM kernel，tile size 从 64×64 改成 128×64 后：
+
+```bash
+# 分别反汇编两个版本
+llvm-objdump --disassemble --mcpu=gfx1151 --no-show-raw-insn tile_64x64.hsaco > isa_64.txt
+llvm-objdump --disassemble --mcpu=gfx1151 --no-show-raw-insn tile_128x64.hsaco > isa_128.txt
+
+# 对比关键指标
+diff <(grep -c 'v_wmma' isa_64.txt) <(grep -c 'v_wmma' isa_128.txt)   # WMMA 指令数
+diff <(grep -c 'scratch' isa_64.txt) <(grep -c 'scratch' isa_128.txt)  # scratch spill 数
+diff <(grep -c 's_waitcnt' isa_64.txt) <(grep -c 's_waitcnt' isa_128.txt)  # 同步点数
+```
+
+对比时重点看：
+
+| 对比维度 | 意义 |
+| ---- | ---- |
+| WMMA 指令数 | tile 越大，每个 wave 的 WMMA 工作量越多，但 wave 数越少 |
+| scratch access 数 | tile 越大寄存器压力越大，可能从 0 变成几百次 scratch access——性能暴跌 |
+| `s_waitcnt` 分布 | vmcnt(0) 越多说明等内存越多；lgkmcnt(0) 越多说明等 LDS 越多 |
+| VALU / SALU / WMMA 比例 | WMMA 占比越高说明 tensor core 利用越好；SALU 占比高可能有 scalar 优化空间 |
+| 指令总行数 | 粗略反映 kernel 复杂度，但不直接等于执行时间 |
+
+### 实操建议
+
+ISA 级分析是 profiling 的最后一层——不要在 PMC counter 还没看的时候就去读 ISA。正确的顺序是：
+
+1. **benchmark** → 知道慢了多少
+2. **PMC counter** → 知道哪个硬件单元在忙
+3. **ISA dump** → 知道是哪条指令让它忙
+
+第 16 章 [Matmul 入门优化](../../part3-hip-kernels/chapter16/index.md) 的「使用 WMMA Tensor 单元」小节会回到 ISA 级分析，用真实的 GEMM kernel 展示 WMMA 指令上下文和优化效果。
+
+## 10.7 进阶报告模板
 
 [第 9 章](../chapter9/index.md) 的报告模板已经把 timeline 阶段需要的字段定下来了。本章把它扩展成"能容纳 PMC 与 Roofline 证据"的版本，主要是加了 §6 / §7 / §8 三个新的小节：
 
@@ -488,6 +596,7 @@ intermediate writes, then optionally torch.compile to reduce launch count.
 - 访存类指标（FETCH/WRITE/L2/MemUnitBusy）要和 [第 1 篇 4.1–4.5 节](../../part1-hardware-rocm/chapter4/index.md) 的内存层次对照看；occupancy 类指标（OccupancyPercent/Wavefronts/VALUInsts）要和 [第 1 篇 3.2–3.3 节](../../part1-hardware-rocm/chapter3/index.md) 的资源池模型对照看。注意 `MemUnitBusy` 这个 derived counter 在 gfx1151 上数值会破百（实测 ~353%），方向能用、绝对值不能用；`OccupancyPercent` 实测 ~85% 落在合理区间内、可参考。
 - 把 PMC 接进 [Roofline](../chapter7/index.md#74-roofline-思想入门) 的关键是三件事：实际时间、实际搬运量、实际计算量；缺任意一项都不要画"实测点"。
 - 进阶报告模板加 §6 / §7 / §8 三节，专门容纳工具状态、PMC 实测值、Roofline 备注；把"已采到"和"想采到"严格分开。
+- PMC counter 不能回答"是哪条指令让它忙"时，需要下沉到 ISA 层：用 `llvm-objdump` 反汇编 code object，对比两个不同配置的 VGPR/SGPR/LDS 用量、WMMA 指令上下文（`v_perm`/`v_pack` 重排开销）、scratch spill 和 `s_waitcnt` 分布。ISA 级分析是 profiling 的最后一层，顺序是 benchmark → PMC counter → ISA dump。
 
 至此 Part 2 profiling 篇结束。下一篇 [HIP Kernels](../../part3-hip-kernels/chapter11/index.md) 会把这套 profiling 习惯反过来用：**先写 kernel，再用 benchmark + timeline + PMC 三层证据决定下一步往哪里改**。
 

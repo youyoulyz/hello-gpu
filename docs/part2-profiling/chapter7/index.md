@@ -151,6 +151,14 @@ memory-bound 的意思是：计算本身不难，主要时间花在等数据。c
 | Softmax (单趟) | fp32, hidden=H | ~3-5 | memory-bound | 减最大值 + 融合归约，少落盘中间结果 |
 | LayerNorm | fp32, hidden=H | ~5-10 | memory-bound | reduction + normalize 融合 + 向量化 |
 | GEMM 朴素 (一线程一元素) | fp16/fp32, 中等 M/N/K | 接近 1 | memory-bound | 必须 tile + LDS / 寄存器复用 |
+
+GEMM 的算术强度有精确公式。对于 C[M,N] = A[M,K] × B[K,N]：
+
+- 浮点运算量：`FLOPs = 2 × M × N × K`（每个输出元素做 K 次乘加）
+- 内存搬运量：`Bytes = (M×K + K×N + M×N) × dtype_bytes`（读 A、读 B、写 C）
+- 算术强度：`I = 2MNK / ((MK + NK + MN) × dtype_bytes)`
+
+例如 M=N=K=4096、fp16（dtype_bytes=2）时，I = 2×4096³ / (3×4096²×2) = 2×4096 / 6 ≈ **1365 FLOP/Byte**——远在 AI MAX 395 实测拐点 ~150 FLOP/Byte 右侧，是典型的 compute-bound。而 M=1、N=8192、K=2048（MoE decode 场景）时，I = 2×1×8192×2048 / ((1×2048 + 2048×8192 + 1×8192)×2) ≈ 0.5 FLOP/Byte——远在拐点左侧，是 memory-bound。这就是为什么同一个 GEMM 算子在不同 shape 下瓶颈完全不同。
 | GEMM (tile + LDS) | fp16, 大 M/N/K, BLOCK=128 | 数十 ~ 上百 | 多在 compute-bound | 上 WMMA / MFMA、调 tile size |
 | GEMM (WMMA / MFMA + 大 batch) | fp16/bf16, 大 GEMM | 数百 ~ > 1000 | compute-bound | 提高 occupancy、更激进 tile |
 | Attention 朴素 (Q·K^T → softmax → ·V) | seq=L, head_dim=D | 取决于 L 和 D | 中间区，常被中间矩阵物化拖累 | FlashAttention 风格融合 |
@@ -286,6 +294,8 @@ benchmark 不是「随手跑一下看个时间」。一个可信 benchmark 至�
 | 锁定时钟 / 后台干扰 | 频率波动会污染数据 | 后台跑着别的 GPU 任务 |
 | 记录环境 | 后续复查需要硬件、驱动、框架版本 | 只有一个数字，没有上下文 |
 | 只改一个变量 | 才知道是谁带来变化 | 同时改 shape、dtype、实现和参数 |
+| L2 cache flushing | 上一次 kernel 的结果可能留在 L2 cache 里，让下一次看起来更快 | 两次相邻 benchmark 共享了 cache 命中——测出来的不是 kernel 速度，是 cache 速度 |
+| 分位数报告（median / p95 / p99） | mean 容易被异常值拉偏；只报 mean 不报分布，读者无法判断稳定性 | 只报一个平均数，尾延迟被吞掉 |
 
 ### 用伪流程描述一个最小 benchmark
 
@@ -308,6 +318,8 @@ benchmark 不是「随手跑一下看个时间」。一个可信 benchmark 至�
 - **波动范围 / std / p95 / p99**：告诉你这个 benchmark 是否稳定，以及尾延迟有多差。
 
 不要只相信一个数字。**一个 benchmark 如果波动很大，你应该先修测量方法，而不是急着优化代码。**
+
+一个容易被忽略的细节是 **L2 cache 污染**：上一次 kernel 的数据可能还留在 L2 cache 里，让下一次 kernel 看起来比实际更快。AI MAX 395 的 L2 只有 2 MB，但 gfx1151 的 MALL（Infinity Cache）有 32 MB——如果两次 benchmark 之间没有清 cache，测出来的可能不是 kernel 速度，而是 cache 命中速度。一个简单的做法是：在每次计时迭代前，用一个大的 memset 或者读一个远超 cache 容量的 buffer 来"冲刷"L2。更严格的做法是用 `hipDeviceSynchronize()` + 写一个 256 MB 的 zero buffer 来强制 cache eviction——后面骨架 A 的 PyTorch 版本里，`torch.cuda.synchronize()` 已经隐式包含了这层保证；骨架 B 的 Triton 版本如果追求极致精度，可以在每次迭代前加一步 `torch.zeros(256*1024*1024, dtype=torch.uint8, device='cuda')` 来显式 flush。
 
 ### Micro-benchmark 设计骨架（伪代码）
 
