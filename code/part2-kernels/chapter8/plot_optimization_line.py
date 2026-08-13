@@ -30,9 +30,9 @@ ORDER = (
     "triton-t1",
 )
 LABELS = {
-    "hip-v0": "HIP v0\n标量逐元素",
-    "hip-v1-contiguous": "HIP v1\n连续",
-    "hip-v1-strided": "HIP v1\n跨步",
+    "hip-v0": "HIP v0\nscalar/elem",
+    "hip-v1-contiguous": "HIP v1\ncontiguous",
+    "hip-v1-strided": "HIP v1\nstrided",
     "hip-v2": "HIP v2\ngrid-stride",
     "hip-v3": "HIP v3\nfloat4",
     "triton-t0": "Triton t0\nBLOCK=256",
@@ -130,11 +130,11 @@ def platform_label(manifest_path: Path | None, fallback: str) -> str:
 
 def experiment_subtitle(manifest_path: Path | None) -> str:
     if manifest_path is None or not manifest_path.is_file():
-        return "N=16,777,216 FP32 | kernel-only GPU event 计时"
+        return "N=16,777,216 FP32 | kernel-only GPU event timing"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return "N=16,777,216 FP32 | kernel-only GPU event 计时"
+        return "N=16,777,216 FP32 | kernel-only GPU event timing"
     software = manifest.get("software", {})
     benchmark = manifest.get("benchmark", {})
     size = benchmark.get("size", "16,777,216")
@@ -145,7 +145,7 @@ def experiment_subtitle(manifest_path: Path | None) -> str:
         parts.append(f"ROCm {rocm}")
     if torch_version:
         parts.append(f"torch {torch_version}")
-    return " | ".join(parts) + " | kernel-only GPU event 计时"
+    return " | ".join(parts) + " | kernel-only GPU event timing"
 
 
 def speedup_notes(values: list[float | None]) -> list[str]:
@@ -153,9 +153,9 @@ def speedup_notes(values: list[float | None]) -> list[str]:
     notes: list[str] = []
     for name, value in zip(ORDER, values, strict=True):
         if value is None or base is None or base <= 0:
-            notes.append("—")
+            notes.append("-")
         else:
-            notes.append(f"×{value / base:.2f}")
+            notes.append(f"x{value / base:.2f}")
     return notes
 
 
@@ -164,7 +164,7 @@ def main() -> None:
     current = read_summary(args.current_summary)
     reference = read_summary(args.reference_summary)
     if not current and not reference:
-        raise SystemExit("至少需要 current 或 reference 的 summary.csv")
+        raise SystemExit("at least one of current or reference summary.csv is required")
 
     current_bw = bandwidths(current)
     reference_bw = bandwidths(reference)
@@ -190,7 +190,7 @@ def main() -> None:
     figure, ax = plt.subplots(figsize=(13.5, 6.8), dpi=200)
     figure.patch.set_facecolor("white")
 
-    current_label = platform_label(args.current_manifest, "当前平台")
+    current_label = platform_label(args.current_manifest, "current platform")
     reference_label = platform_label(args.reference_manifest, "gfx1201 Reference")
     subtitle = (
         experiment_subtitle(args.current_manifest)
@@ -251,18 +251,18 @@ def main() -> None:
     strided_index = ORDER.index("hip-v1-strided")
     if any(v is not None for v in current_bw) and current_bw[strided_index] is not None:
         ax.annotate(
-            "受控负例：跨步访存",
+            "controlled counter-example: strided access",
             (strided_index, current_bw[strided_index]),
             textcoords="offset points",
             xytext=(0, 24),
             ha="center",
-            fontsize=11,
+            fontsize=10.5,
             color=PALETTE["red_strong"],
             fontweight="bold",
         )
 
     ax.set_xticks(positions, [LABELS[name] for name in ORDER], fontsize=13)
-    ax.set_ylabel("有效带宽 (GB/s，逻辑字节)", fontsize=15, labelpad=10)
+    ax.set_ylabel("Effective bandwidth (GB/s, logical bytes)", fontsize=15, labelpad=10)
     ax.set_ylim(0, max(v for v in [*current_bw, *reference_bw] if v is not None) * 1.25)
     ax.yaxis.grid(True, color=PALETTE["neutral"], linewidth=0.8, alpha=0.6)
     ax.set_axisbelow(True)
@@ -273,12 +273,12 @@ def main() -> None:
     for handle in legend.legend_handles:
         handle.set_linewidth(2.4)
 
-    title = args.title or "Vector Add 七个实现的有效带宽：优化效果一览"
+    title = args.title or "Vector Add effective bandwidth across seven implementations"
     ax.set_title(title, loc="left", fontsize=20, fontweight="bold", pad=18, color=PALETTE["ink"])
     figure.text(0.02, 0.985, subtitle, ha="left", fontsize=12, color=PALETTE["muted"])
 
     notes = speedup_notes(current_bw)
-    note_text = "当前平台相对 v0 的带宽倍率：" + "  ".join(
+    note_text = "Bandwidth ratio vs hip-v0 (current platform): " + "  ".join(
         f"{LABELS[name].splitlines()[0]} {notes[index]}"
         for index, name in enumerate(ORDER)
         if current_bw[index] is not None
@@ -287,7 +287,8 @@ def main() -> None:
         0.02,
         0.015,
         note_text
-        + "\n有效带宽 = 3 × N × 4 Byte / median_ms；跨步版为受控负例，其余版本受内存带宽上限约束。",
+        + "\nEffective bandwidth = 3 x N x 4 bytes / median_ms; strided is a controlled "
+        "counter-example, the other variants are bounded by memory bandwidth.",
         ha="left",
         va="bottom",
         fontsize=10.5,
